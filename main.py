@@ -7,8 +7,36 @@ from datetime import datetime
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 
-# ... (sisa fungsi send_telegram_broadcast, fetch_rss_news, dan generate_dynamic_summary tetap sama persis seperti sebelumnya) ...
+def generate_dynamic_summary():
+    """Menyusun template berita dari data RSS Google News"""
+    
+    # URL RSS Google News berbahasa Indonesia
+    url_internasional = "https://news.google.com/rss/headlines/section/topic/WORLD?hl=id&gl=ID&ceid=ID:id"
+    url_ekonomi = "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=id&gl=ID&ceid=ID:id"
+    # Query pencarian spesifik untuk berita lokal
+    url_lokal = "https://news.google.com/rss/search?q=Jakarta&hl=id&gl=ID&ceid=ID:id"
 
+    print("Sedang mengambil data berita terbaru...")
+    berita_internasional = fetch_rss_news(url_internasional, limit=3)
+    berita_ekonomi = fetch_rss_news(url_ekonomi, limit=3)
+    berita_lokal = fetch_rss_news(url_lokal, limit=3)
+
+    today = datetime.now().strftime("%d %B %Y")
+    
+    template = f"""
+*Rangkuman Berita Harian - {today}*
+
+*🌍 Berita Internasional*
+{berita_internasional}
+
+*📈 Perekonomian & Pasar Modal*
+{berita_ekonomi}
+
+*🏙️ Berita Lokal (Jakarta & Sekitarnya)*
+{berita_lokal}
+"""
+    return template.strip()
+    
 if __name__ == '__main__':
     # Pastikan token tidak kosong
     if not BOT_TOKEN or not CHAT_ID:
