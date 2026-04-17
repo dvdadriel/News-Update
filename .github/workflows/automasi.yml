@@ -31,4 +31,4 @@ jobs:
           # Memanggil rahasia yang tadi kita buat di Settings
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python bot_berita.py
+        run: python main.py
