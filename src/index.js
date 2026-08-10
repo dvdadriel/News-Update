@@ -1,5 +1,6 @@
 import { CATEGORIES } from "./feeds.js";
 import { parseRss, dedup, escapeHtml, hashTitle } from "./lib.js";
+import { renderDashboard } from "./dashboard.js";
 
 const WIB_OFFSET_MS = 7 * 60 * 60 * 1000;
 const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
@@ -45,7 +46,7 @@ async function summarize(env, heading, items) {
     temperature: 0.3,
   };
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 15000);
+  const timer = setTimeout(() => ctrl.abort(), 45000); // 70B bisa cold-start lambat
   try {
     const r = await fetch(NIM_URL, {
       method: "POST",
@@ -140,6 +141,22 @@ async function run(env, ctx) {
     return;
   }
 
+  const summaries = await Promise.all(
+    active.map(({ cat, items }) => summarize(env, cat.heading, items))
+  );
+
+  // digest terstruktur — dipakai Telegram + dashboard
+  const ts = new Date().toISOString();
+  const digest = {
+    ts,
+    count: active.reduce((n, { items }) => n + items.length, 0),
+    categories: active.map(({ cat, items }, i) => ({
+      heading: cat.heading,
+      summary: summaries[i],
+      items,
+    })),
+  };
+
   const today = new Date(Date.now() + WIB_OFFSET_MS)
     .toISOString()
     .slice(0, 10)
@@ -147,35 +164,70 @@ async function run(env, ctx) {
     .reverse()
     .join("-");
   const blocks = [`<b>Rangkuman Berita — ${today}</b>`];
-  for (const { cat, items } of active) {
-    const summary = await summarize(env, cat.heading, items);
-    blocks.push(renderCategory(cat.heading, summary, items));
-  }
+  for (const c of digest.categories) blocks.push(renderCategory(c.heading, c.summary, c.items));
 
   await sendTelegram(env, blocks);
 
-  // simpan hash judul baru ke KV
+  // simpan ke KV: hash judul (dedup) + digest (dashboard, TTL 7 hari)
   ctx.waitUntil(
-    Promise.all(
-      active.flatMap(({ items }) =>
-        items.map((it) =>
-          env.SEEN.put(`t:${hashTitle(it.title)}`, "1", { expirationTtl: KV_TTL })
-        )
-      )
-    )
+    Promise.all([
+      env.SEEN.put(`d:${ts}`, JSON.stringify(digest), { expirationTtl: 7 * 24 * 60 * 60 }),
+      ...digest.categories.flatMap(({ items }) =>
+        items.map((it) => env.SEEN.put(`t:${hashTitle(it.title)}`, "1", { expirationTtl: KV_TTL }))
+      ),
+    ])
   );
+  return digest;
+}
+
+async function loadDigests(env, limit) {
+  const list = await env.SEEN.list({ prefix: "d:" });
+  const keys = list.keys
+    .map((k) => k.name)
+    .sort()
+    .reverse()
+    .slice(0, limit);
+  const vals = await Promise.all(keys.map((k) => env.SEEN.get(k)));
+  return vals.filter(Boolean).map((v) => JSON.parse(v));
+}
+
+// Basic Auth: password = env.DASH_PASSWORD (username diabaikan).
+// ponytail: perbandingan string biasa; risiko timing attack diabaikan utk tool pribadi.
+function authed(req, env) {
+  if (!env.DASH_PASSWORD) return false;
+  const h = req.headers.get("authorization") || "";
+  if (!h.startsWith("Basic ")) return false;
+  try {
+    const decoded = atob(h.slice(6));
+    return decoded.slice(decoded.indexOf(":") + 1) === env.DASH_PASSWORD;
+  } catch {
+    return false;
+  }
 }
 
 export default {
   async scheduled(event, env, ctx) {
     await run(env, ctx);
   },
-  // trigger manual via GET saat wrangler dev / debugging
   async fetch(req, env, ctx) {
-    if (new URL(req.url).pathname === "/run") {
-      await run(env, ctx);
-      return new Response("sent");
+    const url = new URL(req.url);
+    if (!authed(req, env)) {
+      return new Response("Auth diperlukan", {
+        status: 401,
+        headers: { "www-authenticate": 'Basic realm="news-update"' },
+      });
     }
-    return new Response("News-Update worker. Cron menjadwalkan; GET /run untuk uji manual.");
+    if (url.pathname === "/run") {
+      await run(env, ctx);
+      return Response.redirect(`${url.origin}/?sent=1`, 302);
+    }
+    const digests = await loadDigests(env, 7);
+    const sel = url.searchParams.get("d");
+    const html = renderDashboard(digests, {
+      selected: sel,
+      sent: url.searchParams.has("sent"),
+      crons: env.CRONS_LABEL || "06:00, 12:00, 18:00 WIB",
+    });
+    return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
   },
 };
