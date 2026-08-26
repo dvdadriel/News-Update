@@ -1,8 +1,32 @@
+# ==========================================================
+# SECRETS — jangan pernah ter-commit.
+#
+# Repo ini pernah membocorkan kredensial DUA KALI:
+#   1. .env  berisi TELEGRAM_TOKEN (versi Python lama)
+#   2. .dev.vars berisi BOT_TOKEN, NVIDIA_API_KEY, DASH_PASSWORD
+#
+# Keduanya lolos karena aturan ignore-nya tidak ada, bukan karena
+# kesalahan yang rumit. Yang di bawah menutup polanya, bukan cuma
+# dua nama file itu.
+# ==========================================================
 .env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+*.pem
+*.key
+
+# Python (versi lama repo ini)
 .venv/
 __pycache__/
 *.pyc
-.DS_Store
-logs/
+
+# Node / Cloudflare
 node_modules/
 .wrangler/
+
+# Lain-lain
+logs/
+.DS_Store
