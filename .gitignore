@@ -33,3 +33,4 @@ logs/
 
 # Dokumen kerja internal — cukup di lokal.
 docs/superpowers/
+.claude/

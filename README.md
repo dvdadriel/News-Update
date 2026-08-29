@@ -17,11 +17,12 @@ npx wrangler deploy
 
 ## Dashboard
 
-Buka URL worker (`https://news-update.<subdomain>.workers.dev/`) di browser →
-login Basic Auth (username bebas, password = `DASH_PASSWORD`). Menampilkan
-berita terakhir yang dikirim, riwayat 7 hari, status/jadwal, dan tombol
-**Kirim sekarang**. Route `/` dan `/run` wajib auth; cron berjalan otomatis
-tanpa auth.
+Buka URL worker (`https://news-update.<subdomain>.workers.dev/`). Dashboard
+**publik** — siapa pun bisa melihat berita terakhir yang dikirim, riwayat 7
+hari, dan status/jadwal. Tombol **Kirim sekarang** baru muncul setelah login
+lewat form password di header (password = `DASH_PASSWORD`); sesi disimpan di
+cookie `HttpOnly` selama 24 jam. Hanya `POST /run` yang butuh auth; cron
+berjalan otomatis tanpa auth.
 
 ## Konfigurasi
 

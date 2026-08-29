@@ -7,6 +7,9 @@ import {
   extractTag,
   parseRss,
   dedup,
+  readCookie,
+  tokenFor,
+  cleanSummary,
 } from "../src/lib.js";
 
 test("decodeEntities: named + numeric", () => {
@@ -35,8 +38,32 @@ test("parseRss: extracts items up to limit, decodes entities", () => {
   </channel></rss>`;
   const items = parseRss(xml, 2);
   assert.equal(items.length, 2);
-  assert.deepEqual(items[0], { title: "Berita & Satu", link: "https://a.test/1" });
+  assert.equal(items[0].title, "Berita & Satu");
+  assert.equal(items[0].link, "https://a.test/1");
+  assert.equal(items[0].source, "Detik");
   assert.equal(items[1].title, "Berita Dua");
+  assert.equal(items[1].link, "https://a.test/2");
+});
+
+test("parseRss: extracts image from enclosure or media tags", () => {
+  const xml = `<rss><channel>
+    <item>
+      <title>Berita Gambar 1</title>
+      <link>https://a.test/1</link>
+      <enclosure url="https://img.test/photo.jpg" type="image/jpeg" />
+      <description><![CDATA[Ini cuplikan berita pertama yang menarik.]]></description>
+    </item>
+    <item>
+      <title>Berita Gambar 2</title>
+      <link>https://a.test/2</link>
+      <description><![CDATA[<img src="https://img.test/inline.webp" /> Cuplikan berita kedua.]]></description>
+    </item>
+  </channel></rss>`;
+  const items = parseRss(xml, 2);
+  assert.equal(items[0].image, "https://img.test/photo.jpg");
+  assert.equal(items[0].snippet, "Ini cuplikan berita pertama yang menarik.");
+  assert.equal(items[1].image, "https://img.test/inline.webp");
+  assert.equal(items[1].snippet, "Cuplikan berita kedua.");
 });
 
 test("dedup: drops seen keys and in-run duplicates", () => {
@@ -51,3 +78,34 @@ test("dedup: drops seen keys and in-run duplicates", () => {
   assert.equal(out[0].title, "Berita Baru");
   assert.ok(seen.has("berita baru"));
 });
+
+test("readCookie ambil nilai yang benar", () => {
+  assert.equal(readCookie("a=1; s=abc; b=2", "s"), "abc");
+  assert.equal(readCookie("as=zzz", "s"), null);
+  assert.equal(readCookie(null, "s"), null);
+});
+
+test("tokenFor deterministik & bukan password plaintext", async () => {
+  const t = await tokenFor("rahasia");
+  assert.equal(t, await tokenFor("rahasia"));
+  assert.notEqual(t, await tokenFor("rahasia2"));
+  assert.ok(!t.includes("rahasia"));
+});
+
+test("cleanSummary: strips English reasoning, quotes, and prevents cut-off sentences", () => {
+  const noisy = `We need to produce a single paragraph in Bahasa Indonesia, 2-3 sentences. Let's craft: "Praperadilan terkait Febrie menyoroti amicus curiae, sementara Bareskrim mencatat 32 kasus agraria. Kementerian PU membuka akses jalan terdampak gempa."`;
+  assert.equal(
+    cleanSummary(noisy),
+    "Praperadilan terkait Febrie menyoroti amicus curiae, sementara Bareskrim mencatat 32 kasus agraria. Kementerian PU membuka akses jalan terdampak gempa."
+  );
+
+  const cutoff = `Bundaran HI dan Kota Bawah Tanah menjadi sorotan, sementara Kementerian PU membuka jalan. Pengusaha melaporkan kon`;
+  assert.equal(
+    cleanSummary(cutoff),
+    "Bundaran HI dan Kota Bawah Tanah menjadi sorotan, sementara Kementerian PU membuka jalan."
+  );
+
+  const think = `<think>Analyzing news headlines</think>Rangkuman: Harga emas stabil sementara IHSG ditutup menguat sore ini.`;
+  assert.equal(cleanSummary(think), "Harga emas stabil sementara IHSG ditutup menguat sore ini.");
+});
+

@@ -1,5 +1,5 @@
 import { CATEGORIES } from "./feeds.js";
-import { parseRss, dedup, escapeHtml, hashTitle } from "./lib.js";
+import { parseRss, dedup, escapeHtml, hashTitle, readCookie, tokenFor, cleanSummary } from "./lib.js";
 import { renderDashboard } from "./dashboard.js";
 
 const WIB_OFFSET_MS = 7 * 60 * 60 * 1000;
@@ -32,18 +32,25 @@ async function fetchCategory(cat, seen, perFeed, perCategory) {
 
 async function summarize(env, heading, items) {
   const titles = items.map((it) => `- ${it.title}`).join("\n");
+  const systemPrompt = `Kamu editor berita profesional Indonesia.
+Tugas: Buat SATU paragraf rangkuman berita (2-3 kalimat lengkap) dalam Bahasa Indonesia berdasarkan daftar judul yang diberikan.
+
+ATURAN KETAT:
+1. LANGSUNG tulis teks rangkuman tanpa basa-basi, tanpa pengantar, tanpa pemikiran/reasoning, dan tanpa tanda kutip.
+2. DILARANG KERAS menulis dalam bahasa Inggris atau membuat kalimat seperti "We need to...", "Let's craft...", "Here is...", "Rangkuman:".
+3. Rangkai informasi dari judul-judul tersebut menjadi satu kesatuan paragraf yang mengalir secara alami dan to the point.
+4. Netral, faktual, tanpa markdown, dan pastikan kalimat terakhir selesai dengan tanda titik (.).`;
+
+  const userPrompt = `Kategori Berita: ${heading}\nDaftar Judul:\n${titles}\n\nInstruksi: Tulis langsung paragraf rangkuman bahasa Indonesia:`;
+
   const body = {
     model: env.NIM_MODEL || "meta/llama-3.3-70b-instruct",
     messages: [
-      {
-        role: "system",
-        content:
-          "Kamu editor berita Indonesia. Rangkum daftar judul berita menjadi SATU paragraf ringkas Bahasa Indonesia (2-3 kalimat), netral, tanpa markdown, tanpa menambah fakta di luar judul.",
-      },
-      { role: "user", content: `Kategori: ${heading}\nJudul:\n${titles}` },
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
     ],
-    max_tokens: 220,
-    temperature: 0.3,
+    max_tokens: 500,
+    temperature: 0.2,
   };
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 45000); // 70B bisa cold-start lambat
@@ -62,7 +69,8 @@ async function summarize(env, heading, items) {
       return null;
     }
     const j = await r.json();
-    return j.choices?.[0]?.message?.content?.trim() || null;
+    const rawContent = j.choices?.[0]?.message?.content?.trim() || null;
+    return cleanSummary(rawContent);
   } catch (e) {
     console.warn(`NIM gagal: ${e}`);
     return null;
@@ -191,19 +199,19 @@ async function loadDigests(env, limit) {
   return vals.filter(Boolean).map((v) => JSON.parse(v));
 }
 
-// Basic Auth: password = env.DASH_PASSWORD (username diabaikan).
+// Dashboard boleh dilihat siapa saja; hanya /run (kirim Telegram) butuh login.
 // ponytail: perbandingan string biasa; risiko timing attack diabaikan utk tool pribadi.
-function authed(req, env) {
+async function authed(req, env) {
   if (!env.DASH_PASSWORD) return false;
-  const h = req.headers.get("authorization") || "";
-  if (!h.startsWith("Basic ")) return false;
-  try {
-    const decoded = atob(h.slice(6));
-    return decoded.slice(decoded.indexOf(":") + 1) === env.DASH_PASSWORD;
-  } catch {
-    return false;
-  }
+  const tok = readCookie(req.headers.get("cookie"), "s");
+  return !!tok && tok === (await tokenFor(env.DASH_PASSWORD));
 }
+
+const redirect = (to, cookie) =>
+  new Response(null, {
+    status: 302,
+    headers: cookie ? { location: to, "set-cookie": cookie } : { location: to },
+  });
 
 export default {
   async scheduled(event, env, ctx) {
@@ -211,21 +219,33 @@ export default {
   },
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
-    if (!authed(req, env)) {
-      return new Response("Auth diperlukan", {
-        status: 401,
-        headers: { "www-authenticate": 'Basic realm="news-update"' },
-      });
+    const home = `${url.origin}/`;
+
+    if (url.pathname === "/login" && req.method === "POST") {
+      const pw = (await req.formData()).get("password") || "";
+      if (!env.DASH_PASSWORD || pw !== env.DASH_PASSWORD) return redirect(`${home}?err=1`);
+      const tok = await tokenFor(env.DASH_PASSWORD);
+      return redirect(home, `s=${tok}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400`);
     }
+
+    if (url.pathname === "/logout") {
+      return redirect(home, "s=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0");
+    }
+
+    const isAuthed = await authed(req, env);
+
     if (url.pathname === "/run") {
+      if (!isAuthed) return redirect(`${home}?err=1`);
       await run(env, ctx);
-      return Response.redirect(`${url.origin}/?sent=1`, 302);
+      return redirect(`${home}?sent=1`);
     }
+
     const digests = await loadDigests(env, 7);
-    const sel = url.searchParams.get("d");
     const html = renderDashboard(digests, {
-      selected: sel,
+      selected: url.searchParams.get("d"),
       sent: url.searchParams.has("sent"),
+      err: url.searchParams.has("err"),
+      authed: isAuthed,
       crons: env.CRONS_LABEL || "06:00, 12:00, 18:00 WIB",
     });
     return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
